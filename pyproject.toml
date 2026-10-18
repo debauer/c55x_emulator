@@ -3,6 +3,8 @@ name = "c55x-emu"
 version = "0.1.0"
 description = "Emulator for the TI TMS320C55x DSP of the Zen Touch player"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 dependencies = []
 
 [project.optional-dependencies]

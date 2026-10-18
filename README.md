@@ -101,3 +101,8 @@ Player tab (LCD and keys) and debug tab (events, MCU registers and traffic):
   (disassembly that reassembles to identical bytes), `c55x_listing.py`
 - `scripts/`: the shell scripts above
 - `tests/`: unit tests
+
+## License
+
+MIT, see `LICENSE`. The firmware is not part of this repository and stays under its own
+copyright; the TI code generation tools have their own license.
