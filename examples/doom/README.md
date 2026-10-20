@@ -7,7 +7,7 @@ original firmware. Shareware Doom, E1M1, on the 160x104 1-bit LCD, steered with 
     scripts/run_doom.sh --gui DOOM1.WAD            # Qt window (needs PyQt5, see the main README)
     scripts/run_doom.sh DOOM1.WAD --steps 300000000 --png doom.png
 
-You need the TI C55x tools (`PATH` or `ZEN_TI_BIN`), `git`, `patch` and your own `DOOM1.WAD`
+You need the TI C55x tools (`PATH` or `ZEN_TI_BIN`; the `include/` and `lib/` directories must sit next to `bin/`, or `ZEN_TI_DIR` names the tools directory), `git`, `patch` and your own `DOOM1.WAD`
 (shareware 1.9, 4196020 bytes; not part of this repository). `scripts/run_doom.sh` builds the
 program first (`examples/doom/build.sh doom`, about 25 s): `fetch.sh` clones doomgeneric at a fixed
 commit into `build/doom/src`, `port/transform.py` converts a copy for the C55x and `doom-zen.patch`
