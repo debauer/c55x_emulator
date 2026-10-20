@@ -1,0 +1,625 @@
+diff --git a/am_map.h b/am_map.h
+index 29d3dfa..4c6de36 100644
+--- a/am_map.h
++++ b/am_map.h
+@@ -23,9 +23,9 @@
+ #include "m_cheat.h"
+ 
+ // Used by ST StatusBar stuff.
+-#define AM_MSGHEADER (('a'<<24L)+('m'<<16L))
+-#define AM_MSGENTERED (AM_MSGHEADER | ('e'<<8L))
+-#define AM_MSGEXITED (AM_MSGHEADER | ('x'<<8L))
++#define AM_MSGHEADER (((long)'a'<<24L)+((long)'m'<<16L))
++#define AM_MSGENTERED (AM_MSGHEADER | ((long)'e'<<8L))
++#define AM_MSGEXITED (AM_MSGHEADER | ((long)'x'<<8L))
+ 
+ 
+ // Called by main loop.
+diff --git a/i_system.c b/i_system.c
+index 512267c..4394f12 100644
+--- a/i_system.c
++++ b/i_system.c
+@@ -130,37 +130,12 @@ static byte *AutoAllocMemory(int *size, int default_ram, int min_ram)
+     return zonemem;
+ }
+ 
++// The zone is a fixed RAM area (doom.cmd): byte addresses 0x520000 .. 0xBDFFFF, one word per byte,
++// word addresses 0x290000 .. 0x5EFFFF = 54 data pages of 64K words.
+ byte *I_ZoneBase (int *size)
+ {
+-    byte *zonemem;
+-    int min_ram, default_ram;
+-    int p;
+-
+-    //!
+-    // @arg <mb>
+-    //
+-    // Specify the heap size, in MiB (default 16).
+-    //
+-
+-    p = M_CheckParmWithArgs("-mb", 1L);
+-
+-    if (p > 0L)
+-    {
+-        default_ram = atoi(myargv[p+1L]);
+-        min_ram = default_ram;
+-    }
+-    else
+-    {
+-        default_ram = DEFAULT_RAM;
+-        min_ram = MIN_RAM;
+-    }
+-
+-    zonemem = AutoAllocMemory(size, default_ram, min_ram);
+-
+-    printf("zone memory: %p, %x allocated for zone\n", 
+-           zonemem, *size);
+-
+-    return zonemem;
++    *size = 0x360000L;
++    return (byte *) 0x290000L;
+ }
+ 
+ void I_PrintBanner(char *msg)
+diff --git a/m_fixed.c b/m_fixed.c
+index 5f1617f..620a02e 100644
+--- a/m_fixed.c
++++ b/m_fixed.c
+@@ -25,38 +25,44 @@
+ 
+ #include "m_fixed.h"
+ 
++// C55x: long long has 40 bits, so the 64-bit products are made from 16-bit halves.
+ 
+-
+-
+-// Fixme. __USE_C_FIXED__ or something.
+-
+-fixed_t
+-FixedMul
+-( fixed_t	a,
+-  fixed_t	b )
++fixed_t FixedMul(fixed_t a, fixed_t b)
+ {
+-    return ((int64_t) a * (int64_t) b) >> FRACBITS;
++    boolean neg = (a < 0L) != (b < 0L);
++    unsigned long ua = a < 0L ? -(unsigned long) a : (unsigned long) a;
++    unsigned long ub = b < 0L ? -(unsigned long) b : (unsigned long) b;
++    uint16_t ah = (uint16_t) (ua >> 16L), al = (uint16_t) ua;
++    uint16_t bh = (uint16_t) (ub >> 16L), bl = (uint16_t) ub;
++    unsigned long r = ((unsigned long) ah * bh << 16L) + (unsigned long) ah * bl
++                    + (unsigned long) al * bh + ((unsigned long) al * bl >> 16L);
++
++    return neg ? -(fixed_t) r : (fixed_t) r;
+ }
+ 
+-
+-
+-//
+-// FixedDiv, C version.
+-//
+-
++// (a << 16) / b by shift and subtract: the 48-bit numerator does not fit.
+ fixed_t FixedDiv(fixed_t a, fixed_t b)
+ {
++    boolean neg = (a < 0L) != (b < 0L);
++    unsigned long ua = a < 0L ? -(unsigned long) a : (unsigned long) a;
++    unsigned long ub = b < 0L ? -(unsigned long) b : (unsigned long) b;
++    unsigned long q, r;
++    short i;
++
+     if ((abs(a) >> 14L) >= abs(b))
+     {
+-	return (a^b) < 0L ? INT_MIN : INT_MAX;
++        return neg ? INT_MIN : INT_MAX;
+     }
+-    else
++    q = (ua / ub) << 16L;
++    r = ua % ub;
++    for (i = 15; i >= 0; i--)
+     {
+-	int64_t result;
+-
+-	result = ((int64_t) a << 16L) / b;
+-
+-	return (fixed_t) result;
++        r <<= 1;
++        if (r >= ub)
++        {
++            r -= ub;
++            q |= 1UL << i;
++        }
+     }
++    return neg ? -(fixed_t) q : (fixed_t) q;
+ }
+-
+diff --git a/m_menu.c b/m_menu.c
+index 821f4a8..eecfbfa 100644
+--- a/m_menu.c
++++ b/m_menu.c
+@@ -74,7 +74,7 @@ int			showMessages = 1L;
+ 	
+ 
+ // Blocky mode, has default, 0 = high, 1 = normal
+-int			detailLevel = 0L;
++int			detailLevel = 1L;	// low detail: half the columns and spans to draw
+ int			screenblocks = 10L;
+ 
+ // temp for screenblocks (0-9)
+diff --git a/p_setup.c b/p_setup.c
+index a3eef65..474ea04 100644
+--- a/p_setup.c
++++ b/p_setup.c
+@@ -124,7 +124,7 @@ void P_LoadVertexes (int lump)
+ 
+     // Determine number of lumps:
+     //  total lump length / vertex record length.
+-    numvertexes = W_LumpLength (lump) / sizeof(mapvertex_t);
++    numvertexes = W_LumpLength (lump) / 4L;   // size of the on-disk record: the lump is converted to the native struct
+ 
+     // Allocate zone memory for buffer.
+     vertexes = Z_Malloc (numvertexes*sizeof(vertex_t),PU_LEVEL,0L);	
+@@ -180,7 +180,7 @@ void P_LoadSegs (int lump)
+     int			side;
+     int                 sidenum;
+ 	
+-    numsegs = W_LumpLength (lump) / sizeof(mapseg_t);
++    numsegs = W_LumpLength (lump) / 12L;   // size of the on-disk record: the lump is converted to the native struct
+     segs = Z_Malloc (numsegs*sizeof(seg_t),PU_LEVEL,0L);	
+     memset (segs, 0L, numsegs*sizeof(seg_t));
+     data = W_CacheLumpNum (lump,PU_STATIC);
+@@ -240,7 +240,7 @@ void P_LoadSubsectors (int lump)
+     mapsubsector_t*	ms;
+     subsector_t*	ss;
+ 	
+-    numsubsectors = W_LumpLength (lump) / sizeof(mapsubsector_t);
++    numsubsectors = W_LumpLength (lump) / 4L;   // size of the on-disk record: the lump is converted to the native struct
+     subsectors = Z_Malloc (numsubsectors*sizeof(subsector_t),PU_LEVEL,0L);	
+     data = W_CacheLumpNum (lump,PU_STATIC);
+ 	
+@@ -269,7 +269,7 @@ void P_LoadSectors (int lump)
+     mapsector_t*	ms;
+     sector_t*		ss;
+ 	
+-    numsectors = W_LumpLength (lump) / sizeof(mapsector_t);
++    numsectors = W_LumpLength (lump) / 26L;   // size of the on-disk record: the lump is converted to the native struct
+     sectors = Z_Malloc (numsectors*sizeof(sector_t),PU_LEVEL,0L);	
+     memset (sectors, 0L, numsectors*sizeof(sector_t));
+     data = W_CacheLumpNum (lump,PU_STATIC);
+@@ -304,7 +304,7 @@ void P_LoadNodes (int lump)
+     mapnode_t*	mn;
+     node_t*	no;
+ 	
+-    numnodes = W_LumpLength (lump) / sizeof(mapnode_t);
++    numnodes = W_LumpLength (lump) / 28L;   // size of the on-disk record: the lump is converted to the native struct
+     nodes = Z_Malloc (numnodes*sizeof(node_t),PU_LEVEL,0L);	
+     data = W_CacheLumpNum (lump,PU_STATIC);
+ 	
+@@ -342,7 +342,7 @@ void P_LoadThings (int lump)
+     boolean		spawn;
+ 
+     data = W_CacheLumpNum (lump,PU_STATIC);
+-    numthings = W_LumpLength (lump) / sizeof(mapthing_t);
++    numthings = W_LumpLength (lump) / 10L;   // size of the on-disk record: the lump is converted to the native struct
+ 	
+     mt = (mapthing_t *)data;
+     for (i=0L ; i<numthings ; i++, mt++)
+@@ -398,7 +398,7 @@ void P_LoadLineDefs (int lump)
+     vertex_t*		v1;
+     vertex_t*		v2;
+ 	
+-    numlines = W_LumpLength (lump) / sizeof(maplinedef_t);
++    numlines = W_LumpLength (lump) / 14L;   // size of the on-disk record: the lump is converted to the native struct
+     lines = Z_Malloc (numlines*sizeof(line_t),PU_LEVEL,0L);	
+     memset (lines, 0L, numlines*sizeof(line_t));
+     data = W_CacheLumpNum (lump,PU_STATIC);
+@@ -477,7 +477,7 @@ void P_LoadSideDefs (int lump)
+     mapsidedef_t*	msd;
+     side_t*		sd;
+ 	
+-    numsides = W_LumpLength (lump) / sizeof(mapsidedef_t);
++    numsides = W_LumpLength (lump) / 30L;   // size of the on-disk record: the lump is converted to the native struct
+     sides = Z_Malloc (numsides*sizeof(side_t),PU_LEVEL,0L);	
+     memset (sides, 0L, numsides*sizeof(side_t));
+     data = W_CacheLumpNum (lump,PU_STATIC);
+@@ -667,19 +667,18 @@ static void PadRejectArray(byte *array, unsigned int len)
+ 
+     // Values to pad the REJECT array with:
+ 
+-    unsigned int rejectpad[4L] =
+-    {
+-        ((totallines * 4L + 3L) & ~3L) + 24L,     // Size
+-        0L,                                    // Part of z_zone block header
+-        50L,                                   // PU_LEVEL
+-        0x1d4a11L                              // DOOM_CONST_ZONEID
+-    };
++    unsigned int rejectpad[4L];
++
++    rejectpad[0L] = ((totallines * 4L + 3L) & ~3L) + 24L;     // Size
++    rejectpad[1L] = 0L;                    // Part of z_zone block header
++    rejectpad[2L] = 50L;                   // PU_LEVEL
++    rejectpad[3L] = 0x1d4a11L;             // DOOM_CONST_ZONEID
+ 
+     // Copy values from rejectpad into the destination array.
+ 
+     dest = array;
+ 
+-    for (i=0L; i<len && i<sizeof(rejectpad); ++i)
++    for (i=0L; i<len && i<16L; ++i)
+     {
+         byte_num = i % 4L;
+         *dest = (rejectpad[i / 4L] >> (byte_num * 8L)) & 0xffL;
+diff --git a/r_data.c b/r_data.c
+index 0a1c2ab..53de098 100644
+--- a/r_data.c
++++ b/r_data.c
+@@ -26,6 +26,7 @@
+ 
+ 
+ #include "w_wad.h"
++#include "zen_wad.h"
+ 
+ #include "doomdef.h"
+ #include "m_misc.h"
+@@ -450,17 +451,17 @@ static void GenerateTextureHashTable(void)
+ //
+ void R_InitTextures (void)
+ {
+-    maptexture_t*	mtexture;
++    byte*		mtexture;
+     texture_t*		texture;
+-    mappatch_t*		mpatch;
++    byte*		mpatch;
+     texpatch_t*		patch;
+ 
+     int			i;
+     int			j;
+ 
+-    int*		maptex;
+-    int*		maptex2;
+-    int*		maptex1;
++    byte*		maptex;
++    byte*		maptex2;
++    byte*		maptex1;
+     
+     char		name[9L];
+     char*		names;
+@@ -476,7 +477,7 @@ void R_InitTextures (void)
+     int			numtextures1;
+     int			numtextures2;
+ 
+-    int*		directory;
++    byte*		directory;
+     
+     int			temp1;
+     int			temp2;
+@@ -486,7 +487,7 @@ void R_InitTextures (void)
+     // Load the patch names from pnames.lmp.
+     name[8L] = 0L;
+     names = W_CacheLumpName (DEH_String("PNAMES"), PU_STATIC);
+-    nummappatches = LONG ( *((int *)names) );
++    nummappatches = zen_rd32((byte *) names);
+     name_p = names + 4L;
+     patchlookup = Z_Malloc(nummappatches*sizeof(*patchlookup), PU_STATIC, NULL);
+ 
+@@ -501,14 +502,14 @@ void R_InitTextures (void)
+     // The data is contained in one or two lumps,
+     //  TEXTURE1 for shareware, plus TEXTURE2 for commercial.
+     maptex = maptex1 = W_CacheLumpName (DEH_String("TEXTURE1"), PU_STATIC);
+-    numtextures1 = LONG(*maptex);
++    numtextures1 = zen_rd32((byte *) maptex);
+     maxoff = W_LumpLength (W_GetNumForName (DEH_String("TEXTURE1")));
+-    directory = maptex+1L;
++    directory = maptex + 4L;
+ 	
+     if (W_CheckNumForName (DEH_String("TEXTURE2")) != -1L)
+     {
+ 	maptex2 = W_CacheLumpName (DEH_String("TEXTURE2"), PU_STATIC);
+-	numtextures2 = LONG(*maptex2);
++	numtextures2 = zen_rd32((byte *) maptex2);
+ 	maxoff2 = W_LumpLength (W_GetNumForName (DEH_String("TEXTURE2")));
+     }
+     else
+@@ -548,7 +549,7 @@ void R_InitTextures (void)
+             printf("\b");
+     }
+ 	
+-    for (i=0L ; i<numtextures ; i++, directory++)
++    for (i=0L ; i<numtextures ; i++, directory += 4L)
+     {
+ 	if (!(i&63L))
+ 	    printf (".");
+@@ -558,34 +559,34 @@ void R_InitTextures (void)
+ 	    // Start looking in second texture file.
+ 	    maptex = maptex2;
+ 	    maxoff = maxoff2;
+-	    directory = maptex+1L;
++	    directory = maptex + 4L;
+ 	}
+ 		
+-	offset = LONG(*directory);
++	offset = zen_rd32(directory);
+ 
+ 	if (offset > maxoff)
+ 	    I_Error ("R_InitTextures: bad texture directory");
+ 	
+-	mtexture = (maptexture_t *) ( (byte *)maptex + offset);
++	mtexture = ((byte *)maptex + offset);
+ 
+ 	texture = textures[i] =
+ 	    Z_Malloc (sizeof(texture_t)
+-		      + sizeof(texpatch_t)*(SHORT(mtexture->patchcount)-1L),
++		      + sizeof(texpatch_t)*(zen_rd16(mtexture + 20L)-1L),
+ 		      PU_STATIC, 0L);
+ 	
+-	texture->width = SHORT(mtexture->width);
+-	texture->height = SHORT(mtexture->height);
+-	texture->patchcount = SHORT(mtexture->patchcount);
++	texture->width = zen_rd16(mtexture + 12L);
++	texture->height = zen_rd16(mtexture + 14L);
++	texture->patchcount = zen_rd16(mtexture + 20L);
+ 	
+-	memcpy (texture->name, mtexture->name, sizeof(texture->name));
+-	mpatch = &mtexture->patches[0L];
++	memcpy (texture->name, mtexture, sizeof(texture->name));
++	mpatch = mtexture + 22L;
+ 	patch = &texture->patches[0L];
+ 
+-	for (j=0L ; j<texture->patchcount ; j++, mpatch++, patch++)
++	for (j=0L ; j<texture->patchcount ; j++, mpatch += 10L, patch++)
+ 	{
+-	    patch->originx = SHORT(mpatch->originx);
+-	    patch->originy = SHORT(mpatch->originy);
+-	    patch->patch = patchlookup[SHORT(mpatch->patch)];
++	    patch->originx = zen_rd16(mpatch);
++	    patch->originy = zen_rd16(mpatch + 2L);
++	    patch->patch = patchlookup[zen_rd16(mpatch + 4L)];
+ 	    if (patch->patch == -1L)
+ 	    {
+ 		I_Error ("R_InitTextures: Missing patch in texture %s",
+diff --git a/r_plane.c b/r_plane.c
+index e50a8ba..e058557 100644
+--- a/r_plane.c
++++ b/r_plane.c
+@@ -42,15 +42,15 @@ planefunction_t		ceilingfunc;
+ //
+ 
+ // Here comes the obnoxious "visplane".
+-#define MAXVISPLANES	128L
+-visplane_t		visplanes[MAXVISPLANES];
++#define MAXVISPLANES	100L	// the array must fit one 64K-word zone page
++visplane_t		*visplanes;	// in the zone: 166 KB of words do not fit one 64 KB data block
+ visplane_t*		lastvisplane;
+ visplane_t*		floorplane;
+ visplane_t*		ceilingplane;
+ 
+ // ?
+ #define MAXOPENINGS	SCREENWIDTH*64L
+-short			openings[MAXOPENINGS];
++short			*openings;	// in the zone: 40960 words, more than a 32K-word data block
+ short*			lastopening;
+ 
+ 
+@@ -93,7 +93,8 @@ fixed_t			cachedystep[SCREENHEIGHT];
+ //
+ void R_InitPlanes (void)
+ {
+-  // Doh!
++  visplanes = Z_Malloc (MAXVISPLANES * sizeof(visplane_t), PU_STATIC, 0L);
++  openings = Z_Malloc (MAXOPENINGS * sizeof(*openings), PU_STATIC, 0L);
+ }
+ 
+ 
+diff --git a/tables.c b/tables.c
+index 97666ac..7f7e351 100644
+--- a/tables.c
++++ b/tables.c
+@@ -30,6 +30,8 @@
+ //	
+ //    
+ 
++// 66 KB of tables do not fit one 64 KB data block (doom.cmd): the arctangent table gets its own
++#pragma DATA_SECTION(tantoangle, ".const:tantoangle")
+ #include "tables.h"
+ 
+ // to get a global angle from cartesian coordinates, the coordinates are
+diff --git a/w_wad.c b/w_wad.c
+index 9031cc4..ef138e9 100644
+--- a/w_wad.c
++++ b/w_wad.c
+@@ -35,6 +35,7 @@
+ #include "z_zone.h"
+ 
+ #include "w_wad.h"
++#include "zen_wad.h"
+ 
+ typedef struct
+ {
+@@ -160,48 +161,18 @@ wad_file_t *W_AddFile (char *filename)
+ 
+     newnumlumps = numlumps;
+ 
+-    if (strcasecmp(filename+strlen(filename)-3L , "wad" ) )
+     {
+-    	// single lump file
+-
+-        // fraggle: Swap the filepos and size here.  The WAD directory
+-        // parsing code expects a little-endian directory, so will swap
+-        // them back.  Effectively we're constructing a "fake WAD directory"
+-        // here, as it would appear on disk.
+-
+-		fileinfo = Z_Malloc(sizeof(filelump_t), PU_STATIC, 0L);
+-		fileinfo->filepos = LONG(0L);
+-		fileinfo->size = LONG(wad_file->length);
+-
+-        // Name the lump after the base of the filename (without the
+-        // extension).
+-
+-		M_ExtractFileBase (filename, fileinfo->name);
+-		newnumlumps++;
+-    }
+-    else 
+-    {
+-    	// WAD file
+-        W_Read(wad_file, 0L, &header, sizeof(header));
+-
+-		if (strncmp(header.identification,"IWAD",4L))
+-		{
+-			// Homebrew levels?
+-			if (strncmp(header.identification,"PWAD",4L))
+-			{
+-			I_Error ("Wad file %s doesn't have IWAD "
+-				 "or PWAD id\n", filename);
+-			}
+-
+-			// ???modifiedgame = true;
+-		}
+-
+-		header.numlumps = LONG(header.numlumps);
+-		header.infotableofs = LONG(header.infotableofs);
+-		length = header.numlumps*sizeof(filelump_t);
+-		fileinfo = Z_Malloc(length, PU_STATIC, 0L);
+-
+-        W_Read(wad_file, header.infotableofs, fileinfo, length);
++        // WAD file: the header and the directory are parsed from widened bytes (zen_wad.c)
++        byte hdr[12L];
++        byte *dir;
++
++        W_Read(wad_file, 0L, hdr, 12L);
++        header.numlumps = zen_rd32(hdr + 4L);
++        header.infotableofs = zen_rd32(hdr + 8L);
++        length = header.numlumps * 16L;
++        dir = Z_Malloc(length, PU_STATIC, 0L);
++        W_Read(wad_file, header.infotableofs, dir, length);
++        fileinfo = (filelump_t *) dir;
+         newnumlumps += header.numlumps;
+     }
+ 
+@@ -216,13 +187,13 @@ wad_file_t *W_AddFile (char *filename)
+     for (i=startlump; i<numlumps; ++i)
+     {
+ 		lump_p->wad_file = wad_file;
+-		lump_p->position = LONG(filerover->filepos);
+-		lump_p->size = LONG(filerover->size);
++		lump_p->position = zen_rd32((byte *) filerover);
++		lump_p->size = zen_rd32((byte *) filerover + 4L);
+ 			lump_p->cache = NULL;
+-		strncpy(lump_p->name, filerover->name, 8L);
++		memcpy(lump_p->name, (byte *) filerover + 8L, 8L);
+ 
+ 			++lump_p;
+-			++filerover;
++			filerover = (filelump_t *) ((byte *) filerover + 16L);
+     }
+ 
+     Z_Free(fileinfo);
+@@ -361,6 +332,8 @@ void W_ReadLump(unsigned int lump, void *dest)
+ 		 c, l->size, lump);	
+     }
+ 
++    zen_convert_lump(l->name, dest, l->size);
++
+     I_EndRead ();
+ }
+ 
+diff --git a/z_zone.c b/z_zone.c
+index dd71f55..662bef7 100644
+--- a/z_zone.c
++++ b/z_zone.c
+@@ -68,25 +68,54 @@ memzone_t*	mainzone;
+ //
+ // Z_ClearZone
+ //
++// C55x: pointers wrap inside a 64K-word data page (*ARn+ changes only the low 16 bits), so no
++// block may cross a page boundary. The zone is built as one free block per page, separated by
++// header-only static blocks that Z_Free never merges across.
++//
+ void Z_ClearZone (memzone_t* zone)
+ {
+     memblock_t*		block;
+-	
+-    // set the entire zone to one free block
+-    zone->blocklist.next =
+-	zone->blocklist.prev =
+-	block = (memblock_t *)( (byte *)zone + sizeof(memzone_t) );
+-    
++    memblock_t*		prev = &zone->blocklist;
++    unsigned long	start, end, page_end;
++
+     zone->blocklist.user = (void *)zone;
+     zone->blocklist.tag = PU_STATIC;
+-    zone->rover = block;
+-	
+-    block->prev = block->next = &zone->blocklist;
+-    
+-    // a free block.
+-    block->tag = PU_FREE;
++    zone->blocklist.id = ZONEID;
++    start = (unsigned long) zone + sizeof(memzone_t);
++    end = (unsigned long) zone + zone->size;
++    zone->rover = (memblock_t *) start;
+ 
+-    block->size = zone->size - sizeof(memzone_t);
++    for (;;)
++    {
++        page_end = (start & ~0xFFFFUL) + 0x10000UL;
++        if (page_end > end)
++            page_end = end;
++
++        block = (memblock_t *) start;
++        block->size = page_end - start;
++        block->user = NULL;
++        block->tag = PU_FREE;
++        block->id = ZONEID;
++        block->prev = prev;
++        prev->next = block;
++        prev = block;
++
++        if (page_end >= end)
++            break;
++
++        // barrier: a static block of just its header at the start of the next page
++        block = (memblock_t *) page_end;
++        block->size = sizeof(memblock_t);
++        block->user = (void *) block;
++        block->tag = PU_STATIC;
++        block->id = ZONEID;
++        block->prev = prev;
++        prev->next = block;
++        prev = block;
++        start = page_end + sizeof(memblock_t);
++    }
++    prev->next = &zone->blocklist;
++    zone->blocklist.prev = prev;
+ }
+ 
+ 
+@@ -96,27 +125,11 @@ void Z_ClearZone (memzone_t* zone)
+ //
+ void Z_Init (void)
+ {
+-    memblock_t*	block;
+     int		size;
+ 
+     mainzone = (memzone_t *)I_ZoneBase (&size);
+     mainzone->size = size;
+-
+-    // set the entire zone to one free block
+-    mainzone->blocklist.next =
+-	mainzone->blocklist.prev =
+-	block = (memblock_t *)( (byte *)mainzone + sizeof(memzone_t) );
+-
+-    mainzone->blocklist.user = (void *)mainzone;
+-    mainzone->blocklist.tag = PU_STATIC;
+-    mainzone->rover = block;
+-	
+-    block->prev = block->next = &mainzone->blocklist;
+-
+-    // free block
+-    block->tag = PU_FREE;
+-    
+-    block->size = mainzone->size - sizeof(memzone_t);
++    Z_ClearZone (mainzone);
+ }
+ 
+ 

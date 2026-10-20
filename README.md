@@ -36,6 +36,9 @@ The script builds the example (`examples/build.sh NAME`, output in `build/exampl
 starts `python3 -m c55x_emu` with your options. `--help` lists them all (`--png FILE`,
 `--steps N`, `--seconds S`, `--trace N`, `--disk FILE`, `--mcu-reg R=V`, `--wav FILE`).
 
+`examples/doom/` ports Doom to the emulator as a larger test program, see
+`examples/doom/README.md` (`scripts/run_doom.sh --gui DOOM1.WAD`).
+
 ## Run the original firmware from your own updater
 
 Needs the firmware container tools from
@@ -104,5 +107,5 @@ Player tab (LCD and keys) and debug tab (events, MCU registers and traffic):
 
 ## License
 
-MIT, see `LICENSE`. The firmware is not part of this repository and stays under its own
+MIT, see `LICENSE`; `examples/doom/` is GPL-2.0-or-later (it contains a Doom port). The firmware is not part of this repository and stays under its own
 copyright; the TI code generation tools have their own license.

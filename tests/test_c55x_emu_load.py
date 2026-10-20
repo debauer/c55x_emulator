@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from c55x_emu.__main__ import parse_load
+from c55x_emu.loader import parse_load
 from c55x_emu.bus import Bus
 
 

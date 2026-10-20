@@ -1,30 +1,75 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 # Build a program of the Doom port: examples/doom/build.sh smoke|doom
-# -> build/doom/<name>/<name>.out (+ .map, .dis). Needs the TI C55x tools (ZEN_TI_BIN or PATH).
+# -> build/doom/<name>/<name>.out (+ .map). Needs the TI C55x tools 4.4.1 (ZEN_TI_BIN or PATH).
+#   smoke  tests the tool chain: rts55x.lib start-up, 32-bit math, initialised data, malloc
+#   doom   Doom (doomgeneric): fetches and converts the sources first (fetch.sh), see README.md
+# Objects are rebuilt when their source is newer; ZEN_JOBS (default 2) compiles in parallel.
 set -eu
 NAME=${1:?usage: examples/doom/build.sh <smoke|doom>}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 TI=${ZEN_TI_BIN:-$(dirname "$(command -v cl55 || echo "$ROOT/build/ti-cgt-c5500-4.4.1/bin/cl55")")}
 EX=$ROOT/examples
+HERE=$EX/doom
+P=$HERE/port
+WORK=$ROOT/build/doom/work
 OUT=$ROOT/build/doom/$NAME
 [ -x "$TI/cl55" ] || { echo "cl55 not found in $TI (set ZEN_TI_BIN)" >&2; exit 1; }
-[ -d "$EX/doom/$NAME" ] || { echo "no program $NAME" >&2; exit 1; }
+[ -d "$HERE/$NAME" ] || [ "$NAME" = doom ] || { echo "no program $NAME" >&2; exit 1; }
 mkdir -p "$OUT"
 cd "$OUT"
+
+CF="-q --memory_model=large -O2 -vcpu:2.2 --symdebug:none"
+# the Doom sources are compiled with int = long (port/zen_types.h)
+DF="$CF --preinclude=$P/zen_types.h -I$P/include -I$P -I$WORK -I$TI/../include -DCMAP256 -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200"
+NF="$CF -I$EX/common -I$EX/include -I$P -I$TI/../include"
+
+# compile_if_newer FLAGS SOURCE: writes <basename>.obj
+compile_if_newer() {
+    flags=$1; src=$2
+    obj=$(basename "$src" .c).obj
+    if [ ! -f "$obj" ] || [ "$src" -nt "$obj" ] || [ "$P/zen_types.h" -nt "$obj" ]; then
+        "$TI/cl55" $flags -c "$src" --output_file="$obj"
+    fi
+}
+
 OBJS=""
-for SRC in "$EX/doom/$NAME"/*.c "$EX"/common/lcd.c "$EX"/common/font.c "$EX"/common/i2c.c \
-           "$EX"/common/irq.c "$EX"/common/mcu.c; do
-    OBJ=$(basename "$SRC" .c).obj
-    "$TI/cl55" -q --memory_model=large -O2 -vcpu:2.2 --symdebug:none \
-        --include_path="$EX/common" --include_path="$EX/include" --include_path="$TI/../include" \
-        -c "$SRC" --output_file="$OBJ"
-    OBJS="$OBJS $OBJ"
+NATIVE="$EX/common/lcd.c $EX/common/font.c $EX/common/i2c.c $EX/common/irq.c $EX/common/mcu.c"
+if [ "$NAME" = doom ]; then
+    [ -f "$WORK/d_main.c" ] && [ "$WORK/d_main.c" -nt "$HERE/doom-zen.patch" ] || "$HERE/fetch.sh"
+    SRCS=$(cat "$HERE/doom_sources.txt")
+    JOBS=${ZEN_JOBS:-2}
+    for f in $SRCS; do
+        OBJS="$OBJS $f.obj"
+    done
+    for f in $SRCS; do                  # the stale ones, compiled in parallel
+        if [ ! -f "$f.obj" ] || [ "$WORK/$f.c" -nt "$f.obj" ] || [ "$P/zen_types.h" -nt "$f.obj" ]; then
+            echo "$TI/cl55 $DF -c $WORK/$f.c --output_file=$f.obj"
+        fi
+    done | xargs -P "$JOBS" -I{} sh -c '{}'
+    for f in zen_stubs zen_libc zen_wad zen_platform zen_video zen_main; do
+        compile_if_newer "$DF" "$P/$f.c"
+        OBJS="$OBJS $f.obj"
+    done
+    NATIVE="$NATIVE $P/zen_hw_if.c"
+else
+    for src in "$HERE/$NAME"/*.c; do
+        compile_if_newer "$NF" "$src"
+        OBJS="$OBJS $(basename "$src" .c).obj"
+    done
+fi
+for src in $NATIVE; do
+    compile_if_newer "$NF" "$src"
+    OBJS="$OBJS $(basename "$src" .c).obj"
 done
-for SRC in "$EX/doom/reset.asm" "$EX/common/vectors.asm"; do
-    OBJ=$(basename "$SRC" .asm).obj
-    "$TI/asm55" -q --memory_model=large "$SRC" "$OBJ" > "$OBJ.log" 2>&1 || { cat "$OBJ.log"; exit 1; }
-    OBJS="$OBJS $OBJ"
+for src in "$HERE/reset.asm" "$EX/common/vectors.asm"; do
+    obj=$(basename "$src" .asm).obj
+    "$TI/asm55" -q --memory_model=large "$src" "$obj" > "$obj.log" 2>&1 || { cat "$obj.log"; exit 1; }
+    OBJS="$OBJS $obj"
 done
-"$TI/lnk55" -q $OBJS "$EX/doom/doom.cmd" -i "$TI/../lib" -l rts55x.lib -o "$NAME.out" -m "$NAME.map"
-"$TI/dis55" -q -r -g "$NAME.out" > "$NAME.dis"
+rm -f "$NAME.out"
+python3 "$HERE/linkcmd.py" "$NAME.cmd" $OBJS
+"$TI/lnk55" -q $OBJS "$NAME.cmd" -i "$TI/../lib" -l rts55x.lib -o "$NAME.out" -m "$NAME.map" 2>&1 \
+    | grep -v "warning" | grep -v "^   matches are consumed" | grep -v "^$" || true
+[ -f "$NAME.out" ] || { echo "link failed" >&2; exit 1; }
 echo "built $OUT/$NAME.out"

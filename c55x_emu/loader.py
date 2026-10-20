@@ -12,6 +12,7 @@ Hybrid: Jukebox2 with the reconstructed C functions built by scripts/c55x_hybrid
 lose their listing entries and are decoded again, C functions are named "<name> [C]".
 """
 
+import argparse
 import bisect
 import collections
 import json
@@ -157,3 +158,14 @@ def load_jukebox2():
         funcs = sorted((int(k, 16), v["name"]) for k, v in symbols.items() if v.get("kind") == "function")
     return Program("Jukebox2", sections, JUKEBOX2_ENTRY, insns, {}, funcs, JUKEBOX2_IDLE,
                    JUKEBOX2_POLL)
+
+
+def parse_load(text):
+    """--load ADDR:FILE -> (byte address, file bytes); an argparse type"""
+    addr, _, name = text.partition(":")
+    if not name:
+        raise argparse.ArgumentTypeError("expected ADDR:FILE")
+    try:
+        return int(addr, 0), Path(name).read_bytes()
+    except (ValueError, OSError) as e:
+        raise argparse.ArgumentTypeError(f"{text}: {e}")

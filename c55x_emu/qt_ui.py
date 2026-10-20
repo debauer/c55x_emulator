@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel, QLine
 from .cpu import EmulationError
 from .diskimage import open_disk
 from .lcd import HEIGHT, WIDTH
-from .loader import load_program
+from .loader import load_program, parse_load
 from .machine import Machine
 from .pacing import Pacer
 from .qt_audio import AudioSink
@@ -172,6 +172,8 @@ def main():
     ap.add_argument("image", help="C55x COFF executable (.out), 'jukebox2', 'fresc' or 'hybrid' (Jukebox2 with the reconstructed C, scripts/c55x_hybrid.py)")
     ap.add_argument("--disk", help="disk image file (a missing file is created as a synthetic "
                                    "image; see python3 -m c55x_emu.diskimage --format-cfs)")
+    ap.add_argument("--load", action="append", default=[], type=parse_load, metavar="ADDR:FILE",
+                    help="copy FILE to this byte address before the start (repeatable)")
     ap.add_argument("--mute", action="store_true", help="no live audio output")
     ap.add_argument("--scale", type=int, default=SCALE, help=f"LCD zoom (default {SCALE}; 2 for small screens)")
     args = ap.parse_args()
@@ -179,6 +181,8 @@ def main():
     disk = open_disk(args.disk) if args.disk else None
     app = QApplication(sys.argv[:1])
     machine = Machine(program, disk=disk)
+    for addr, data in args.load:
+        machine.bus.load(addr, data)
     win = Window(machine, None if args.mute else AudioSink(machine.codec.gains), args.scale)
     app.installEventFilter(win)
     win.show()

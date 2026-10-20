@@ -1,3 +1,4 @@
+; SPDX-License-Identifier: GPL-2.0-or-later
 ; Doom port: reset entry (algebraic syntax, assembled with asm55). Same CPU mode setup as
 ; common/reset.asm, then the run-time start-up _c_int00 of rts55x.lib (initialises the
 ; variables from .cinit, sets the stacks, calls main()).

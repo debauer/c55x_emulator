@@ -5,12 +5,11 @@ Runs --steps instructions, then for each --event queues the MCU event byte and r
 
 import argparse
 import sys
-from pathlib import Path
 
 from .cpu import EmulationError
 from .lcd import HEIGHT, WIDTH
 from .diskimage import open_disk
-from .loader import load_program
+from .loader import load_program, parse_load
 from .machine import Machine
 from .png import write_png
 from .wav import WavRecorder
@@ -22,17 +21,6 @@ def ascii_art(rows):
         pair = (rows[y], rows[y + 1] if y + 1 < HEIGHT else [0] * WIDTH)
         out.append("".join(" .'#"[a * 2 + b] for a, b in zip(*pair)))
     return "\n".join(out)
-
-
-def parse_load(text):
-    """ADDR:FILE -> (byte address, file bytes)"""
-    addr, _, name = text.partition(":")
-    if not name:
-        raise argparse.ArgumentTypeError("expected ADDR:FILE")
-    try:
-        return int(addr, 0), Path(name).read_bytes()
-    except (ValueError, OSError) as e:
-        raise argparse.ArgumentTypeError(f"{text}: {e}")
 
 
 def main():
