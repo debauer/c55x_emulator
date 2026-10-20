@@ -5,6 +5,7 @@ Runs --steps instructions, then for each --event queues the MCU event byte and r
 
 import argparse
 import sys
+from pathlib import Path
 
 from .cpu import EmulationError
 from .lcd import HEIGHT, WIDTH
@@ -23,6 +24,17 @@ def ascii_art(rows):
     return "\n".join(out)
 
 
+def parse_load(text):
+    """ADDR:FILE -> (byte address, file bytes)"""
+    addr, _, name = text.partition(":")
+    if not name:
+        raise argparse.ArgumentTypeError("expected ADDR:FILE")
+    try:
+        return int(addr, 0), Path(name).read_bytes()
+    except (ValueError, OSError) as e:
+        raise argparse.ArgumentTypeError(f"{text}: {e}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("image", help="C55x COFF executable (.out), 'jukebox2', 'fresc' or 'hybrid' (Jukebox2 with the reconstructed C, scripts/c55x_hybrid.py)")
@@ -38,11 +50,15 @@ def main():
                     help="on a stop, list the last N executed instructions")
     ap.add_argument("--mcu-reg", action="append", default=[], metavar="REG=VALUE",
                     help="MCU register value, e.g. 1=0x4000 (repeatable)")
+    ap.add_argument("--load", action="append", default=[], type=parse_load, metavar="ADDR:FILE",
+                    help="copy FILE to this byte address before the start (repeatable)")
     ap.add_argument("--wav", help="record the audio McBSP0 sends to the codec (16-bit stereo WAV)")
     args = ap.parse_args()
     regs = {int(k, 0): int(v, 0) for k, v in (r.split("=") for r in args.mcu_reg)}
     program = load_program(args.image)
     m = Machine(program, regs, disk=open_disk(args.disk) if args.disk else None)
+    for addr, data in args.load:
+        m.bus.load(addr, data)
     if args.trace:
         m.cpu.core.set_trace(args.trace)
     if args.wav:
