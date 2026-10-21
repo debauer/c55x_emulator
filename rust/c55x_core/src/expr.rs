@@ -111,7 +111,7 @@ pub fn shift_acc(m: &mut Core, value: i128, count: i128) -> R<i128> {
     let r = shift(v, count)?;
     let (lo, hi) = (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1);
     if r < lo || r > hi {
-        m.shift_ovf = true;
+        m.ovf_pending = true;
         if satd(m) {
             return Ok(if r > 0 { hi } else { lo });
         }
@@ -188,7 +188,7 @@ fn store_value(m: &mut Core, e: &Expr) -> R<i128> {
             let count = arith(m, b, false, false, false)?;
             let count = if matches!(b.as_ref(), Expr::Reg(Reg::T(_), _)) {
                 // SPRU374E 4.70.3: a Tx count outside -32..+31 saturates and reports overflow
-                m.shift_ovf = count < -32 || count > 31;
+                m.ovf_pending = count < -32 || count > 31;
                 count.clamp(-32, 31)
             } else { count } * if *op == Op::Shl { 1 } else { -1 };
             let value = get(m, a)?;
@@ -324,7 +324,7 @@ fn bin(m: &mut Core, op: Op, a: &Expr, b: &Expr, mask: Option<i64>) -> R<i128> {
             let count = arith(m, b, false, false, true)?;
             let count = if matches!(b, Expr::Reg(Reg::T(_), _)) {
                 // SPRU374E 4.70.3: a Tx count outside -32..+31 saturates and reports overflow
-                m.shift_ovf = count < -32 || count > 31;
+                m.ovf_pending = count < -32 || count > 31;
                 count.clamp(-32, 31)
             } else { count };
             let n = count * if op == Op::Shl { 1 } else { -1 };

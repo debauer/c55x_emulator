@@ -11,7 +11,7 @@ pub fn set(m: &mut Core, e: &Expr, v: i128) -> R<()> {
             // SPRU374E 4.70.3: a saturated Tx shift count reports overflow on the
             // destination accumulator.
             if let Reg::Ac(i) = r {
-                if std::mem::take(&mut m.shift_ovf) { m.st.acov[*i as usize] = 1; }
+                if std::mem::take(&mut m.ovf_pending) { m.st.acov[*i as usize] = 1; }
             }
             m.st.set(*r, v)
         }

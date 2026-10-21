@@ -210,7 +210,7 @@ fn truth(m: &mut Core, c: &Option<Expr>) -> R<bool> {
 }
 
 pub fn exec(m: &mut Core, i: &Insn) -> R<Option<u32>> {
-    m.shift_ovf = false; // a pending overflow report (SPRU374E 4.70.3) never crosses instructions
+    m.ovf_pending = false; // a pending overflow report (SPRU374E 4.70.3) never crosses instructions
     if let Some(f) = &i.fused {
         f(m)?;
         return Ok(None);

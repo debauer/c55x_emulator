@@ -177,7 +177,7 @@ fn bin_fx(op: Op, a: &Rc<Expr>, b: &Rc<Expr>, mask: Option<i64>) -> Fx {
                     let count = fnn(m)?;
                     let n = if tx {
                         // SPRU374E 4.70.3: a Tx count outside -32..+31 saturates and reports overflow
-                        m.shift_ovf = count < -32 || count > 31;
+                        m.ovf_pending = count < -32 || count > 31;
                         count.clamp(-32, 31)
                     } else { count } * sign;
                     let value = g(m)?;
@@ -188,7 +188,7 @@ fn bin_fx(op: Op, a: &Rc<Expr>, b: &Rc<Expr>, mask: Option<i64>) -> Fx {
                 let fa = arith_fx(a, false, true, true);
                 Box::new(move |m| {
                     let count = fnn(m)?;
-                    m.shift_ovf = count < -32 || count > 31;
+                    m.ovf_pending = count < -32 || count > 31;
                     shift(fa(m)?, count.clamp(-32, 31) * sign)
                 })
             } else {

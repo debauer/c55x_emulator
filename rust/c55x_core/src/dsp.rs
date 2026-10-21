@@ -7,21 +7,30 @@ use crate::state::{ST1_FRCT, ST1_SATD, ST2_RDM, ST3_SMUL};
 
 /// SATD (SPRU371F, ST1): a D-unit arithmetic result written to an accumulator that
 /// overflows 32 bits (M40 = 0) or 40 bits (M40 = 1) is replaced by the largest positive
-/// or negative value. This saturation does not report the overflow flags (ACOVx); only a
-/// saturated Tx shift count does (SPRU374E 4.70.3, see fuse.rs / dest.rs).
-/// d_unit_result: is src such a result; saturate_acc: the clamp.
+/// or negative value. Every such overflow reports the destination ACOVy
+/// (SPRU374E 4.48.2 for the accumulate; the ADD/SUB sections agree; C54CM = 0
+/// detection covers each operation, v3.x CPU 1.5.1): the pending flag set here is
+/// latched into the destination accumulator at the store (fuse.rs / dest.rs).
+/// d_unit_result: is src such a result; saturate_acc: the detection and clamp.
 pub fn d_unit_result(src: &Expr) -> bool {
+    // UnsignedProduct is exempt: SPRU374E 4.47.10/11 zero-extend the 32-bit
+    // unsigned product to 40 bits - a signed-domain overflow check (and a
+    // SATD clamp) would corrupt it, and u16 x u16 cannot overflow 32 bits.
     matches!(src, Expr::AddSub { .. } | Expr::Neg(_) | Expr::Abs(_) | Expr::Rnd(_)
-        | Expr::UnsignedProduct(..) | Expr::SignedAccumulatorProduct(..) | Expr::SignedMemorySquare(..)
+        | Expr::SignedAccumulatorProduct(..) | Expr::SignedMemorySquare(..)
         | Expr::Bin { op: Op::Mul | Op::Shl | Op::Shr, .. })
 }
 
-pub fn saturate_acc(m: &Core, v: i128) -> i128 {
-    if m.st.st1 & ST1_SATD == 0 {
-        return v;
-    }
+pub fn saturate_acc(m: &mut Core, v: i128) -> i128 {
     let bits = if m40(m) { 40 } else { 32 };
-    v.clamp(-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+    let (lo, hi) = (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1);
+    if v < lo || v > hi {
+        m.ovf_pending = true;
+        if m.st.st1 & ST1_SATD != 0 {
+            return v.clamp(lo, hi);
+        }
+    }
+    v
 }
 
 /// rnd (SPRU375G): add 2^15 (RDM = 0) or round to nearest even (RDM = 1), then clear
@@ -46,13 +55,17 @@ pub fn mant(v: i128, exponent: bool) -> i128 {
 
 /// Product of two multiplier operands: FRCT shifts it left by one; with SMUL and SATD as
 /// well, 8000h * 8000h gives 7FFF FFFFh (SPRU371F, ST1 / ST3).
-pub fn product(m: &Core, x: i128, y: i128) -> i128 {
-    let st = &m.st;
-    if st.st1 & ST1_FRCT == 0 {
-        x * y
-    } else if x == -0x8000 && y == -0x8000 && st.st3 & ST3_SMUL != 0 && st.st1 & ST1_SATD != 0 {
-        0x7FFF_FFFF
-    } else {
-        (x * y) << 1
+pub fn product(m: &mut Core, x: i128, y: i128) -> i128 {
+    if m.st.st1 & ST1_FRCT == 0 {
+        return x * y;
     }
+    if x == -0x8000 && y == -0x8000 && m.st.st3 & ST3_SMUL != 0 {
+        // SPRU374E 4.48.2: multiplication overflow detection depends on
+        // SMUL; the documented case reports the destination overflow
+        m.ovf_pending = true;
+        if m.st.st1 & ST1_SATD != 0 {
+            return 0x7FFF_FFFF;
+        }
+    }
+    (x * y) << 1
 }
