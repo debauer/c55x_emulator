@@ -10,6 +10,7 @@ use crate::core::Core;
 use crate::dsp::{product, rnd, saturate_acc};
 use crate::err::R;
 use crate::expr::{get, m40, meta, shift, shifted_accumulator, sext, sx, Expr, Op, ACM, M32};
+use crate::expr::shift_acc;
 use crate::state::Reg;
 
 pub type Fx = Box<dyn Fn(&mut Core) -> R<i128>>;
@@ -176,23 +177,18 @@ fn bin_fx(op: Op, a: &Rc<Expr>, b: &Rc<Expr>, mask: Option<i64>) -> Fx {
                     let count = fnn(m)?;
                     let n = if tx {
                         // SPRU374E 4.70.3: a Tx count outside -32..+31 saturates and reports overflow
-                        m.tx_shift_sat = count < -32 || count > 31;
+                        m.shift_ovf = count < -32 || count > 31;
                         count.clamp(-32, 31)
                     } else { count } * sign;
-                    let (wide, signed) = (m40(m), sx(m));
-                    let bits = if wide { 40 } else { 32 };
-                    let mut v = g(m)? & ((1i128 << bits) - 1);
-                    if signed { v = sext(v, bits) }
-                    let r = shift(v, n)?;
-                    // M40 selects input extension/overflow; SFTS still writes 40 bits.
-                    Ok(r)
+                    let value = g(m)?;
+                    shift_acc(m, value, n)
                 })
             // SPRU374E 4.70.3: a Tx count outside -32..+31 saturates and reports overflow
             } else if tx {
                 let fa = arith_fx(a, false, true, true);
                 Box::new(move |m| {
                     let count = fnn(m)?;
-                    m.tx_shift_sat = count < -32 || count > 31;
+                    m.shift_ovf = count < -32 || count > 31;
                     shift(fa(m)?, count.clamp(-32, 31) * sign)
                 })
             } else {

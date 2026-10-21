@@ -37,7 +37,7 @@ pub struct Compiled {
 
 pub struct Core {
     pub st: State,
-    pub tx_shift_sat: bool, // a Tx shift count saturated during this read phase (SPRU374E 4.70.3)
+    pub shift_ovf: bool, // a Tx shift count saturated during this read phase (SPRU374E 4.70.3)
     pub(crate) mem: *mut u8,
     _mem_obj: Py<PyByteArray>,
     pub cpu: Py<PyAny>,
@@ -90,7 +90,7 @@ impl Core {
         }
         let ir_build = py.import("c55x_emu.ir")?.getattr("build")?;
         Ok(Core {
-            st: State::default(), tx_shift_sat: false, mem, _mem_obj: mem_obj.unbind(), cpu: cpu.clone().unbind(),
+            st: State::default(), shift_ovf: false, mem, _mem_obj: mem_obj.unbind(), cpu: cpu.clone().unbind(),
             bus: bus.unbind(), code: code.unbind(), ir_build: ir_build.unbind(), hooks: Vec::new(), hook_lo: u32::MAX, code_pages,
             cache: ICache::new(), next_event: u64::MAX,
             irq_counts: [0; 32], native: 0, compiles: 0, py_writes: 0, py_calls: 0, trace: None, odd_longs: None, bios_idle: None,

@@ -10,7 +10,7 @@ use crate::addr::Ea;
 use crate::core::Core;
 use crate::err::{emu, R};
 use crate::dsp::{mant, product, rnd, saturate_acc};
-use crate::state::{reg_meta, Reg, AC_MASK, ST1_M40, ST1_SXMD, ST3_SST};
+use crate::state::{reg_meta, Reg, AC_MASK, ST1_M40, ST1_SATD, ST1_SXMD, ST3_SST};
 
 pub const M32: i128 = 0xFFFF_FFFF;
 pub const ACM: i128 = AC_MASK as i128;
@@ -86,6 +86,33 @@ fn meta_get(m: &mut Core, e: &Expr) -> R<((u32, bool, bool), i128)> {
 
 pub fn sx(m: &Core) -> bool { m.st.st1 & ST1_SXMD != 0 }
 pub fn m40(m: &Core) -> bool { m.st.st1 & ST1_M40 != 0 }
+pub fn satd(m: &Core) -> bool { m.st.st1 & ST1_SATD != 0 }
+
+/// Accumulator shift shared by both engines (interpreter and compiled):
+/// SPRU374E 4.70.3 - the shifter input is confined to the M40-selected
+/// working width (32 or 40 bits; SXMD substitutes the guard bits by
+/// sign-extending from bit 31), the result is confined to the same width,
+/// a result outside the width reports a destination overflow (the pending
+/// flag is latched into ACOV at the store), and SATD saturates it to the
+/// width's extreme values.
+pub fn shift_acc(m: &mut Core, value: i128, count: i128) -> R<i128> {
+    let bits = if m40(m) { 40 } else { 32 };
+    let mut v = value & ((1i128 << bits) - 1);
+    if sx(m) { v = sext(v, bits); }
+    let r = shift(v, count)?;
+    let (lo, hi) = (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1);
+    if r < lo || r > hi {
+        // Overflow at the M40-selected boundary: the destination flag is
+        // reported and SATD saturates. The manual confines M40 = 0 to input
+        // substitution, detection at bit 31 and the saturation values; it
+        // does not truncate the 40-bit shifter result.
+        m.shift_ovf = true;
+        if satd(m) {
+            return Ok(if r > 0 { hi } else { lo });
+        }
+    }
+    Ok(r)
+}
 
 pub fn shifted_accumulator(e: &Expr) -> bool {
     matches!(e, Expr::Bin { op: Op::Shl | Op::Shr, a, .. } if meta(a).2)
@@ -152,11 +179,11 @@ fn store_value(m: &mut Core, e: &Expr) -> R<i128> {
             let count = arith(m, b, false, false, false)?;
             let count = if matches!(b.as_ref(), Expr::Reg(Reg::T(_), _)) {
                 // SPRU374E 4.70.3: a Tx count outside -32..+31 saturates and reports overflow
-                m.tx_shift_sat = count < -32 || count > 31;
+                m.shift_ovf = count < -32 || count > 31;
                 count.clamp(-32, 31)
-            } else { count };
-            let value = store_value(m, a)?;
-            shift(value, count * if *op == Op::Shl { 1 } else { -1 })
+            } else { count } * if *op == Op::Shl { 1 } else { -1 };
+            let value = get(m, a)?;
+            shift_acc(m, value, count)
         }
         _ => get(m, e),
     }
@@ -288,7 +315,7 @@ fn bin(m: &mut Core, op: Op, a: &Expr, b: &Expr, mask: Option<i64>) -> R<i128> {
             let count = arith(m, b, false, false, true)?;
             let count = if matches!(b, Expr::Reg(Reg::T(_), _)) {
                 // SPRU374E 4.70.3: a Tx count outside -32..+31 saturates and reports overflow
-                m.tx_shift_sat = count < -32 || count > 31;
+                m.shift_ovf = count < -32 || count > 31;
                 count.clamp(-32, 31)
             } else { count };
             let n = count * if op == Op::Shl { 1 } else { -1 };

@@ -23,7 +23,7 @@ fn store_fx(d: Expr) -> Store {
             m.st.ac[i as usize] = (v & AC_MASK as i128) as u64;
             // SPRU374E 4.70.3: a saturated Tx shift count reports overflow on the
             // destination accumulator.
-            if std::mem::take(&mut m.tx_shift_sat) { m.st.acov[i as usize] = 1; }
+            if std::mem::take(&mut m.shift_ovf) { m.st.acov[i as usize] = 1; }
             Ok(())
         }),
         Expr::Reg(r, _) => Box::new(move |m, v| { m.st.set(r, v); Ok(()) }),
