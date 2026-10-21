@@ -7,7 +7,8 @@ use crate::state::{ST1_FRCT, ST1_SATD, ST2_RDM, ST3_SMUL};
 
 /// SATD (SPRU371F, ST1): a D-unit arithmetic result written to an accumulator that
 /// overflows 32 bits (M40 = 0) or 40 bits (M40 = 1) is replaced by the largest positive
-/// or negative value. The overflow flags (ACOVx) are not modeled.
+/// or negative value. This saturation does not report the overflow flags (ACOVx); only a
+/// saturated Tx shift count does (SPRU374E 4.70.3, see fuse.rs / dest.rs).
 /// d_unit_result: is src such a result; saturate_acc: the clamp.
 pub fn d_unit_result(src: &Expr) -> bool {
     matches!(src, Expr::AddSub { .. } | Expr::Neg(_) | Expr::Abs(_) | Expr::Rnd(_)

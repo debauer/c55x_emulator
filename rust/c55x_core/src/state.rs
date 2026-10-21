@@ -73,6 +73,7 @@ pub struct State {
     pub xar: [u32; 8],
     pub xcdp: u32, pub xdp: u32, pub xsp: u32, pub ssp: u32,
     pub tc1: u32, pub tc2: u32, pub carry: u32,
+    pub acov: [u32; 4],   // ACOV0..ACOV3 in ST0_55, sticky overflow flags (SPRU374E 4.70.3)
     pub st1: u32, pub st2: u32, pub st3: u32,
     pub ier0: u32, pub ier1: u32, pub ifr0: u32, pub ifr1: u32,
     pub ivpd: u32, pub ivph: u32, pub dbstat: u32,

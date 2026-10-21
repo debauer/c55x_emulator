@@ -150,6 +150,11 @@ impl PyCore {
         self.core.trace.as_ref().map(|(_, t)| t.iter().copied().collect()).unwrap_or_default()
     }
 
+    /// The four accumulator overflow flags ACOV0..ACOV3, 0 (clear) or 1 (set) each.
+    fn acov(&self) -> Vec<u32> {
+        self.core.st.acov.to_vec()
+    }
+
     /// Count long accesses at odd addresses per pc (on: start afresh, off: stop).
     fn set_odd_longs(&mut self, on: bool) {
         self.core.odd_longs = if on { Some(Default::default()) } else { None };

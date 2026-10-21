@@ -3,10 +3,18 @@
 use crate::core::Core;
 use crate::err::{emu, R};
 use crate::expr::{get, Expr, M32};
+use crate::state::Reg;
 
 pub fn set(m: &mut Core, e: &Expr, v: i128) -> R<()> {
     match e {
-        Expr::Reg(r, _) => m.st.set(*r, v),
+        Expr::Reg(r, _) => {
+            // SPRU374E 4.70.3: a saturated Tx shift count reports overflow on the
+            // destination accumulator.
+            if let Reg::Ac(i) = r {
+                if std::mem::take(&mut m.tx_shift_sat) { m.st.acov[*i as usize] = 1; }
+            }
+            m.st.set(*r, v)
+        }
         Expr::Mem { ea, words, port, .. } => {
             let a = ea.eval(m)?;
             if *port { m.port_write(a, v)? } else if *words == 2 { m.write32(a, v & M32)? } else { m.write(a, v)? }
