@@ -7,10 +7,10 @@
 use std::rc::Rc;
 
 use crate::core::Core;
-use crate::dsp::{product, rnd};
+use crate::dsp::{product, rnd, saturate_acc};
 use crate::err::R;
-use crate::expr::{get, m40, meta, shift, sext, sx, Expr, Op, ACM, M32};
-use crate::state::{Reg, ST1_SATD};
+use crate::expr::{get, m40, meta, shift, shifted_accumulator, sext, sx, Expr, Op, ACM, M32};
+use crate::state::Reg;
 
 pub type Fx = Box<dyn Fn(&mut Core) -> R<i128>>;
 
@@ -58,7 +58,7 @@ pub fn get_fx(e: &Rc<Expr>) -> Fx {
         Expr::LNot(x) => { let f = get_fx(x); Box::new(move |m| Ok((f(m)? == 0) as i128)) }
         Expr::Bin { op, a, b, mask } => bin_fx(*op, a, b, *mask),
         Expr::AddSub { sub, a, b, c, .. } => {
-            let (fa, fb) = (arith_fx(a, false, true, true), arith_fx(b, false, true, true));
+            let (fa, fb) = (add_operand_fx(a), add_operand_fx(b));
             let (sub, c) = (*sub, c.clone());
             Box::new(move |m| {
                 let va = fa(m)?;
@@ -76,6 +76,17 @@ pub fn get_fx(e: &Rc<Expr>) -> Fx {
         }
         _ => tree(e),
     }
+}
+
+/// expr::arith
+fn add_operand_fx(e: &Rc<Expr>) -> Fx {
+    let value = arith_fx(e, false, true, true);
+    if shifted_accumulator(e) {
+        Box::new(move |m| {
+            let v = value(m)?;
+            Ok(saturate_acc(m, v))
+        })
+    } else { value }
 }
 
 /// expr::arith
@@ -137,9 +148,11 @@ fn bin_fx(op: Op, a: &Rc<Expr>, b: &Rc<Expr>, mask: Option<i64>) -> Fx {
             // a shift count in Tx is signed (-32..31) whatever SXMD says (SPRU375G)
             let (fnn, fv) = (arith_fx(b, false, false, false), raw_fx(a, true, true));
             let sign = if op == Op::LShl { 1 } else { -1 };
+            let tx = matches!(b.as_ref(), Expr::Reg(Reg::T(_), _));
             let acc = meta(a).2;
             Box::new(move |m| {
-                let n = fnn(m)? * sign;
+                let count = fnn(m)?;
+                let n = (if tx { count.clamp(-32, 31) } else { count }) * sign;
                 let v = fv(m)?;
                 let r = shift(v, n)?;
                 Ok(if acc { r & if m40(m) { ACM } else { M32 } } else if let Some(k) = mask { r & k as i128 } else { r })
@@ -156,21 +169,27 @@ fn bin_fx(op: Op, a: &Rc<Expr>, b: &Rc<Expr>, mask: Option<i64>) -> Fx {
         Op::Shl | Op::Shr => {
             let fnn = arith_fx(b, false, false, true);
             let sign = if op == Op::Shl { 1 } else { -1 };
+            let tx = matches!(b.as_ref(), Expr::Reg(Reg::T(_), _));
             if meta(a).2 {
                 let g = get_fx(a);
                 Box::new(move |m| {
-                    let n = fnn(m)? * sign;
+                    let count = fnn(m)?;
+                    let n = (if tx { count.clamp(-32, 31) } else { count }) * sign;
                     let (wide, signed) = (m40(m), sx(m));
                     let bits = if wide { 40 } else { 32 };
                     let mut v = g(m)? & ((1i128 << bits) - 1);
                     if signed { v = sext(v, bits) }
                     let r = shift(v, n)?;
-                    // with SATD the overflow is saturated by the accumulator write (saturate_d)
-                    Ok(if wide || m.st.st1 & ST1_SATD != 0 { r } else if signed { sext(r & M32, 32) } else { r & M32 })
+                    // M40 selects input extension/overflow; SFTS still writes 40 bits.
+                    Ok(r)
                 })
             } else {
                 let fa = arith_fx(a, false, true, true);
-                Box::new(move |m| { let n = fnn(m)? * sign; shift(fa(m)?, n) })
+                Box::new(move |m| {
+                    let count = fnn(m)?;
+                    let n = (if tx { count.clamp(-32, 31) } else { count }) * sign;
+                    shift(fa(m)?, n)
+                })
             }
         }
         Op::Mul => {

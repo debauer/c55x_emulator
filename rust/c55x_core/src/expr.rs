@@ -9,8 +9,8 @@ use std::rc::Rc;
 use crate::addr::Ea;
 use crate::core::Core;
 use crate::err::{emu, R};
-use crate::dsp::{mant, product, rnd};
-use crate::state::{reg_meta, Reg, AC_MASK, ST1_M40, ST1_SATD, ST1_SXMD, ST3_SST};
+use crate::dsp::{mant, product, rnd, saturate_acc};
+use crate::state::{reg_meta, Reg, AC_MASK, ST1_M40, ST1_SXMD, ST3_SST};
 
 pub const M32: i128 = 0xFFFF_FFFF;
 pub const ACM: i128 = AC_MASK as i128;
@@ -29,6 +29,9 @@ pub enum Expr {
     CarryIn(bool),                               // borrow
     Mem { ea: Ea, words: u8, port: bool, signed: bool },
     Mmr { addr: u32, words: u8, signed: bool },
+    UnsignedProduct(Rc<Expr>, Rc<Expr>),
+    SignedAccumulatorProduct(Rc<Expr>, Rc<Expr>),
+    SignedMemorySquare(Rc<Expr>),
     Mar(Ea),
     Pair(Reg, Reg),
     Half(Rc<Expr>, bool),                       // high
@@ -84,6 +87,17 @@ fn meta_get(m: &mut Core, e: &Expr) -> R<((u32, bool, bool), i128)> {
 pub fn sx(m: &Core) -> bool { m.st.st1 & ST1_SXMD != 0 }
 pub fn m40(m: &Core) -> bool { m.st.st1 & ST1_M40 != 0 }
 
+pub fn shifted_accumulator(e: &Expr) -> bool {
+    matches!(e, Expr::Bin { op: Op::Shl | Op::Shr, a, .. } if meta(a).2)
+}
+
+fn add_operand(m: &mut Core, e: &Expr) -> R<i128> {
+    let value = arith(m, e, false, true, true)?;
+    // Native C55x shifted ADD/SUB saturates the intermediate shifter result.
+    // C54CM is rejected by the state layer; MOV stores have separate rules.
+    Ok(if shifted_accumulator(e) { saturate_acc(m, value) } else { value })
+}
+
 /// values.arith: use_sx / use_m40 tell whether the Python call passed sx / m40.
 pub fn arith(m: &mut Core, e: &Expr, cmp: bool, use_sx: bool, use_m40: bool) -> R<i128> {
     let ((w, signed, acc), g) = meta_get(m, e)?;
@@ -124,6 +138,26 @@ pub fn shift(v: i128, n: i128) -> R<i128> {
     Ok(if n >= 0 { v << n } else { v >> -n })
 }
 
+/// MOV accumulator-to-memory uses the full shifter input independently of M40.
+/// Keep the untruncated result until optional rounding and explicit saturation.
+fn store_value(m: &mut Core, e: &Expr) -> R<i128> {
+    match e {
+        Expr::Reg(Reg::Ac(_), _) => {
+            let value = get(m, e)?;
+            Ok(if sx(m) { sext(value, 40) } else { value & ACM })
+        }
+        Expr::Rnd(x) => { let value = store_value(m, x)?; Ok(rnd(m, value)) }
+        Expr::Saturate(x) => Ok(store_value(m, x)?.clamp(-(1i128 << 31), (1i128 << 31) - 1)),
+        Expr::Bin { op: op @ (Op::Shl | Op::Shr), a, b, .. } if meta(a).2 => {
+            let count = arith(m, b, false, false, false)?;
+            let count = if matches!(b.as_ref(), Expr::Reg(Reg::T(_), _)) { count.clamp(-32, 31) } else { count };
+            let value = store_value(m, a)?;
+            shift(value, count * if *op == Op::Shl { 1 } else { -1 })
+        }
+        _ => get(m, e),
+    }
+}
+
 pub fn get(m: &mut Core, e: &Expr) -> R<i128> {
     Ok(match e {
         Expr::Num(n) => *n as i128,
@@ -141,13 +175,39 @@ pub fn get(m: &mut Core, e: &Expr) -> R<i128> {
                 m.st.mmr(*addr, None)? as i128
             }
         }
+        Expr::UnsignedProduct(a, b) => {
+            // TI cl55 4.4.1 emits this exact MPYMU form for multiplication
+            // of two unsigned 16-bit C values into unsigned long.
+            // SWPU067E 5-442 signed-input prose contradicts that codegen.
+            let x = get(m, a)? & 0xFFFF;
+            let y = get(m, b)? & 0xFFFF;
+            product(m, x, y) & M32
+        }
+        Expr::SignedAccumulatorProduct(a, b) => {
+            // MPY/MPYM ACx with Tx/Smem: preserve ACx(32:16), extend the
+            // 32-bit product before rounding or accumulation (SWPU067E 5-433/438).
+            let operand = |m: &mut Core, e: &Expr| -> R<i128> {
+                let value = get(m, e)?;
+                Ok(if meta(e).2 { sext(value >> 16, 17) } else { sext(value, 16) })
+            };
+            let x = operand(m, a)?;
+            let y = operand(m, b)?;
+            sext(product(m, x, y), 32)
+        }
+        Expr::SignedMemorySquare(a) => {
+            // SQRM/SQAM/SQSM: dis55 repeats Smem in its algebraic notation,
+            // but the instruction loads and postmodifies this operand once.
+            // SWPU067E 5-581/586/589: signed input independent of SXMD.
+            let x = sext(get(m, a)?, 16);
+            sext(product(m, x, x), 32)
+        }
         Expr::Mar(ea) => ea.eval(m)? as i128,
         Expr::Pair(hi, lo) => ((m.st.get(*hi) & 0xFFFF) << 16) | (m.st.get(*lo) & 0xFFFF),
         Expr::Half(x, high) => {
             if !matches!(**x, Expr::Reg(..)) && m.st.st3 & ST3_SST != 0 {
                 return emu("store of a shifted accumulator with ST3.SST (saturate on store) not modeled".into());
             }
-            (get(m, x)? >> if *high { 16 } else { 0 }) & 0xFFFF
+            (store_value(m, x)? >> if *high { 16 } else { 0 }) & 0xFFFF
         }
         Expr::Field { src, positions, expand } => {
             let s = raw(m, src, true, true)?;
@@ -183,8 +243,8 @@ pub fn get(m: &mut Core, e: &Expr) -> R<i128> {
         Expr::LNot(x) => (get(m, x)? == 0) as i128,
         Expr::Bin { op, a, b, mask } => return bin(m, *op, a, b, *mask),
         Expr::AddSub { sub, a, b, c, .. } => {
-            let va = arith(m, a, false, true, true)?;
-            let vb = arith(m, b, false, true, true)?;
+            let va = add_operand(m, a)?;
+            let vb = add_operand(m, b)?;
             let bits = if m40(m) { 40 } else { 32 };
             let msk = (1i128 << bits) - 1;
             if *sub {
@@ -207,7 +267,9 @@ fn bin(m: &mut Core, op: Op, a: &Expr, b: &Expr, mask: Option<i64>) -> R<i128> {
         }
         Op::LShl | Op::LShr => {
             // a shift count in Tx is signed (-32..31) whatever SXMD says (SPRU375G)
-            let n = arith(m, b, false, false, false)? * if op == Op::LShl { 1 } else { -1 };
+            let count = arith(m, b, false, false, false)?;
+            let count = if matches!(b, Expr::Reg(Reg::T(_), _)) { count.clamp(-32, 31) } else { count };
+            let n = count * if op == Op::LShl { 1 } else { -1 };
             let v = raw(m, a, true, true)?;
             let r = shift(v, n)?;
             if meta(a).2 { r & if m40(m) { ACM } else { M32 } } else if let Some(k) = mask { r & k as i128 } else { r }
@@ -219,15 +281,18 @@ fn bin(m: &mut Core, op: Op, a: &Expr, b: &Expr, mask: Option<i64>) -> R<i128> {
                         Op::Gt => x > y, _ => x >= y }) as i128
         }
         Op::Shl | Op::Shr => {
-            let n = arith(m, b, false, false, true)? * if op == Op::Shl { 1 } else { -1 };
+            let count = arith(m, b, false, false, true)?;
+            let count = if matches!(b, Expr::Reg(Reg::T(_), _)) { count.clamp(-32, 31) } else { count };
+            let n = count * if op == Op::Shl { 1 } else { -1 };
             if meta(a).2 {
                 let (wide, signed) = (m40(m), sx(m));
                 let bits = if wide { 40 } else { 32 };
                 let mut v = get(m, a)? & ((1i128 << bits) - 1);
                 if signed { v = sext(v, bits) }
                 let r = shift(v, n)?;
-                // with SATD the overflow is saturated by the accumulator write (saturate_d)
-                if wide || m.st.st1 & ST1_SATD != 0 { r } else if signed { sext(r & M32, 32) } else { r & M32 }
+                // M40 selects input extension and overflow position, not output width.
+                // The accumulator write retains 40 bits and applies SATD if enabled.
+                r
             } else {
                 shift(arith(m, a, false, true, true)?, n)?
             }

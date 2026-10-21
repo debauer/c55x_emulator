@@ -11,6 +11,7 @@ use crate::state::{ST1_FRCT, ST1_SATD, ST2_RDM, ST3_SMUL};
 /// d_unit_result: is src such a result; saturate_acc: the clamp.
 pub fn d_unit_result(src: &Expr) -> bool {
     matches!(src, Expr::AddSub { .. } | Expr::Neg(_) | Expr::Abs(_) | Expr::Rnd(_)
+        | Expr::UnsignedProduct(..) | Expr::SignedAccumulatorProduct(..) | Expr::SignedMemorySquare(..)
         | Expr::Bin { op: Op::Mul | Op::Shl | Op::Shr, .. })
 }
 

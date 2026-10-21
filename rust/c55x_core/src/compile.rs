@@ -113,6 +113,39 @@ fn call(name: &str, args: &Node<'_>, unsigned: bool, io: bool, mmap: bool) -> R<
     let arg = |i: usize| item(args, i);
     let kind = |i: usize| -> R<String> { text(&arg(i)?, 0) };
     Ok(match (name, argc) {
+        ("uns", 1) if kind(0)? == "bin" && text(&arg(0)?, 1)? == "*" => {
+            // MPYMU [9], bounded to the form independently emitted by TI
+            // cl55 for unsigned 16-by-16 multiplication to unsigned long.
+            let n = arg(0)?;
+            let a = node(&item(&n, 2)?, false, io, mmap)?;
+            let b = node(&item(&n, 3)?, false, io, mmap)?;
+            let temp = |x: &Expr| matches!(x, Expr::Reg(Reg::T(_), _));
+            let smem = |x: &Expr| matches!(x, Expr::Mem { words: 1, port: false, .. });
+            if !((temp(&a) && smem(&b)) || (smem(&a) && temp(&b))) {
+                return unsupported("unsigned product other than MPYMU Tx/Smem");
+            }
+            Expr::UnsignedProduct(Rc::new(a), Rc::new(b))
+        }
+        ("sqdst_difference", 1) => {
+            // SQDST reports the complement of borrow on every subtraction
+            // (SWPU067E 5-582), unlike the generic shifted-SUB carry rule.
+            let mut value = node(&arg(0)?, false, io, mmap)?;
+            match &mut value {
+                Expr::AddSub { sub: true, shifted16, .. } => *shifted16 = false,
+                _ => return unsupported("SQDST difference requires subtraction"),
+            }
+            value
+        }
+        ("sqdst_square", 1) => {
+            // Internal SQDST lowering only, SWPU067E pp. 5-582..583:
+            // signed ACx(32:16), FRCT/SMUL, then signed 32-bit extension.
+            // Reuse the qualified product path without changing generic '*'.
+            let x = Rc::new(node(&arg(0)?, false, io, mmap)?);
+            if !matches!(&*x, Expr::Reg(Reg::Ac(_), true)) {
+                return unsupported("SQDST square requires a signed accumulator");
+            }
+            Expr::SignedAccumulatorProduct(Rc::clone(&x), x)
+        }
         ("uns", 1) => node(&arg(0)?, true, io, mmap)?,
         ("coef", 1) if kind(0)? == "mem" => node(&arg(0)?, unsigned, io, mmap)?,   // Cmem (CDP)
         ("dbl", 1) if kind(0)? == "mem" => mem(&arg(0)?, 2, unsigned, io)?,
@@ -127,6 +160,14 @@ fn call(name: &str, args: &Node<'_>, unsigned: bool, io: bool, mmap: bool) -> R<
             Expr::Pair(reg(hi)?, reg(lo)?)
         }
         ("HI", 1) | ("LO", 1) if kind(0)? == "reg" => Expr::Half(Rc::new(node(&arg(0)?, false, false, false)?), name == "HI"),
+        ("HI", 1) if kind(0)? == "call" => {
+            // SWPU067E MOV [8]: round, saturate, then store bits 31..16.
+            let x = node(&arg(0)?, false, false, false)?;
+            if !matches!(&x, Expr::Rnd(_) | Expr::Saturate(_)) {
+                return unsupported("HI() of an unsupported function");
+            }
+            Expr::Half(Rc::new(x), true)
+        }
         ("HI", 1) | ("LO", 1) if kind(0)? == "bin" => {
             // Smem = HI / LO(ACx << #k): store of a shifted accumulator
             let x = node(&arg(0)?, false, false, false)?;
@@ -192,12 +233,26 @@ fn bin(n: &Node<'_>, unsigned: bool, io: bool, mmap: bool) -> R<Expr> {
         "==" => simple(Op::Eq, a, b), "!=" => simple(Op::Ne, a, b), "<" => simple(Op::Lt, a, b),
         "<=" => simple(Op::Le, a, b), ">" => simple(Op::Gt, a, b), ">=" => simple(Op::Ge, a, b),
         "<<" => simple(Op::Shl, a, b), ">>" => simple(Op::Shr, a, b),
-        "*" => simple(Op::Mul, a, b),
+        "*" => {
+            let acc = |x: &Expr| matches!(x, Expr::Reg(Reg::Ac(_), true));
+            let scalar = |x: &Expr| matches!(x, Expr::Reg(Reg::T(_), true)
+                | Expr::Mem { words: 1, port: false, signed: true, .. });
+            let smem = |x: &Expr| matches!(x,
+                Expr::Mem { words: 1, port: false, signed: true, .. });
+            if smem(&a) && smem(&b) && na.eq(&nb)? {
+                Expr::SignedMemorySquare(a)
+            } else if (acc(&a) && scalar(&b)) || (scalar(&a) && acc(&b)) {
+                Expr::SignedAccumulatorProduct(a, b)
+            } else {
+                simple(Op::Mul, a, b)
+            }
+        }
         "+" | "-" => {
             let shifted16 = is_bin(&nb, "<<")? && text(&item(&nb, 2)?, 0)? == "mem"
                 && text(&item(&nb, 3)?, 0)? == "num" && int(&item(&nb, 3)?, 1)? == 16;
             Expr::AddSub {
-                sub: op == "-", product: is_bin(&na, "*")? || is_bin(&nb, "*")?,
+                sub: op == "-", product: is_bin(&na, "*")? || is_bin(&nb, "*")?
+                    || (text(&nb, 0)? == "call" && text(&nb, 1)? == "sqdst_square"),
                 chain: is_bin(&na, &op)?, shifted16, a, b, c: Rc::new(Cell::new(0)),
             }
         }

@@ -13,7 +13,7 @@ pub const ST3_SMUL: u32 = 1 << 1;
 pub const ST3_SST: u32 = 1 << 0;
 pub const ST2_RDM: u32 = 1 << 10;
 const ST1_UNSUPPORTED: u32 = 1 << 5; // C54CM
-const ST3_SATA: u32 = 1 << 5;
+pub const ST3_SATA: u32 = 1 << 5;
 
 /// Plain storage registers, in registers.PLAIN order.
 pub const PLAIN: [&str; 16] = [
@@ -203,7 +203,6 @@ impl State {
             0x04 => match w {
                 None => return Ok(self.st3),
                 Some(v) => {
-                    if v & ST3_SATA != 0 { return emu("ST3.SATA not modeled".into()); }
                     self.st3 = v
                 }
             },

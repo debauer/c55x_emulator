@@ -7,7 +7,7 @@ use crate::core::Core;
 use crate::dest::set;
 use crate::err::R;
 use crate::expr::{arith, get, is_acc, meta, sext, Expr};
-use crate::state::{Reg, AC_MASK, ST1_SXMD};
+use crate::state::{Reg, AC_MASK, ST1_SATD, ST1_SXMD};
 use crate::stmt::Part;
 
 /// A part's read-phase result. A plain struct passed by reference: moving a packed enum
@@ -18,11 +18,54 @@ struct Pending { v: i128, carry: Option<u8>, vs: Vec<i128> }
 fn read(m: &mut Core, p: &Part, out: &mut Pending) -> R<()> {
     out.v = match p {
         Part::RegToggle(r, _) | Part::RegBit(r, _, _) | Part::HiLoad(_, r) => m.st.get(*r),
+        Part::BitCount(_, a, b, _) => {
+            ((m.st.get(*a) & m.st.get(*b)) as u64 & AC_MASK).count_ones() as i128
+        }
+        Part::Extremum(dst, source, max) => {
+            let old = m.st.get(*dst);
+            let value = arith(m, source, false, true, false)?;
+            let bits = if matches!(dst, Reg::Ac(_)) {
+                if crate::expr::m40(m) { 40 } else { 32 }
+            } else { 16 };
+            let (left, right) = (sext(value, bits), sext(old, bits));
+            let take = if *max { left > right } else { left < right };
+            out.carry = Some((!take) as u8);
+            if take { value } else { old }
+        }
         Part::TestSet(_, loc, _, _) => get(m, loc)?,
         Part::Subc(op, src, _) => {
             let x = m.st.get(*src);
-            let diff = (x - (arith(m, op, false, true, false)? << 15)) & AC_MASK as i128;
+            let divisor = arith(m, op, false, true, false)? << 15;
+            // SWPU067E 5-631: carry is the complement of the bit-31 borrow,
+            // independently of M40; the quotient decision still uses bit 39.
+            out.carry = Some(((x & 0xFFFF_FFFF) >= (divisor & 0xFFFF_FFFF)) as u8);
+            let diff = (x - divisor) & AC_MASK as i128;
             if diff >> 39 == 0 { (diff << 1) + 1 } else { x << 1 }
+        }
+        Part::DualAlu(_, a, b, sub) => {
+            // Read each aligned Lmem once, including its two-word DAGEN update.
+            // SWPU067E ADD/SUB dual: independent low16 and high24 datapaths.
+            let half = |m: &mut Core, e: &Expr| -> R<(i128, i128)> {
+                let value = if let Expr::Mem { ea, words: 2, port: false, .. } = e {
+                    let address = ea.eval(m)?;
+                    // Dual Lmem keeps its addressed word high, even at odd addresses.
+                    ((m.read(address)? as i128) << 16) | m.read(address ^ 1)? as i128
+                } else { get(m, e)? };
+                let high = if is_acc(e) { sext(value >> 16, 24) }
+                    else if m.st.st1 & ST1_SXMD != 0 { sext(value >> 16, 16) }
+                    else { (value >> 16) & 0xFFFF };
+                Ok((high, sext(value, 16)))
+            };
+            let (ah, al) = half(m, a)?;
+            let (bh, bl) = half(m, b)?;
+            let (mut high, mut low) = if *sub { (ah - bh, al - bl) } else { (ah + bh, al + bl) };
+            out.carry = Some(if *sub { ((ah & 0xFFFF) >= (bh & 0xFFFF)) as u8 }
+                else { (((ah & 0xFFFF) + (bh & 0xFFFF)) > 0xFFFF) as u8 });
+            if m.st.st1 & ST1_SATD != 0 {
+                high = high.clamp(-32768, 32767);
+                low = low.clamp(-32768, 32767);
+            }
+            ((high & 0xFFFFFF) << 16) | (low & 0xFFFF)
         }
         Part::Push(items) => {
             out.vs.clear();
@@ -54,6 +97,14 @@ fn commit(m: &mut Core, p: &Part, pend: &mut Pending) -> R<()> {
     let v = pend.v;
     match p {
         Part::Nop => {}
+        Part::BitCount(dst, _, _, tc) => {
+            m.st.set(*dst, v);
+            m.st.set(*tc, v & 1);
+        }
+        Part::Extremum(dst, _, _) => {
+            m.st.set(*dst, v);
+            if let Some(carry) = pend.carry { m.st.carry = carry as u32; }
+        }
         Part::StatusBit(addr, bit, val) => m.st.set_status_bit(*addr, *bit, *val)?,
         Part::RegToggle(r, bit) => m.st.set(*r, v ^ (1 << bit)),
         Part::TestSet(tc, loc, bit, val) => {
@@ -61,7 +112,14 @@ fn commit(m: &mut Core, p: &Part, pend: &mut Pending) -> R<()> {
             set(m, loc, if *val { v | (1 << bit) } else { v & !(1 << bit) })?;
         }
         Part::RegBit(r, bit, val) => m.st.set(*r, if *val { v | (1 << bit) } else { v & !(1 << bit) }),
-        Part::Subc(_, _, d) => m.st.set(*d, v),
+        Part::Subc(_, _, d) => {
+            m.st.set(*d, v);
+            if let Some(carry) = pend.carry { m.st.carry = carry as u32; }
+        }
+        Part::DualAlu(d, _, _, _) => {
+            m.st.set(*d, v);
+            if let Some(carry) = pend.carry { m.st.carry = carry as u32; }
+        }
         Part::HiLoad(acc, _) => {
             // SPRU375E 4.5.3: TAx sign extended (per SXMD) to 40 bits and moved to ACx(31-16)
             // with the guard bits; ACx(15-0) become 0 (cl55 builds longs as HI(ACx) = hi
