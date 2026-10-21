@@ -13,9 +13,8 @@ pub fn set(m: &mut Core, e: &Expr, v: i128) -> R<()> {
         }
         Expr::Mmr { addr, words, .. } => {
             if *words == 2 {
-                let a = addr & !1;
-                m.st.mmr(a, Some(((v >> 16) & 0xFFFF) as u32))?;
-                m.st.mmr(a + 1, Some((v & 0xFFFF) as u32))?;
+                m.st.mmr(*addr, Some(((v >> 16) & 0xFFFF) as u32))?;
+                m.st.mmr(*addr ^ 1, Some((v & 0xFFFF) as u32))?;
             } else {
                 m.st.mmr(*addr, Some((v & 0xFFFF) as u32))?;
             }

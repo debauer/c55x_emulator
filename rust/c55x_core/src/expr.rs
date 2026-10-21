@@ -135,8 +135,8 @@ pub fn get(m: &mut Core, e: &Expr) -> R<i128> {
         }
         Expr::Mmr { addr, words, .. } => {
             if *words == 2 {
-                let a = addr & !1;
-                ((m.st.mmr(a, None)? as i128) << 16) | m.st.mmr(a + 1, None)? as i128
+                ((m.st.mmr(*addr, None)? as i128) << 16)
+                    | m.st.mmr(*addr ^ 1, None)? as i128
             } else {
                 m.st.mmr(*addr, None)? as i128
             }
