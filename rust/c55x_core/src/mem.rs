@@ -65,8 +65,7 @@ impl Core {
         self.py(|py, _cpu, bus| { bus.call_method1(intern!(py, "write"), (word, v))?; Ok(()) })
     }
 
-    /// A long access at an odd address uses the even pair below it (SPRU371F); counted
-    /// per pc when switched on, to find buffers that are not long aligned.
+    /// Count legal odd long accesses per PC when telemetry is enabled.
     #[inline(always)]
     fn odd_long(&mut self, word: u32) {
         if word & 1 != 0 {
@@ -78,15 +77,14 @@ impl Core {
 
     pub fn read32(&mut self, word: u32) -> R<i128> {
         self.odd_long(word);
-        let w = word & !1;
-        Ok(((self.read(w)? as i128) << 16) | self.read(w + 1)? as i128)
+        // SWPU073E 3.3.2: addressed word is MSW, paired word is address XOR 1.
+        Ok(((self.read(word)? as i128) << 16) | self.read(word ^ 1)? as i128)
     }
 
     pub fn write32(&mut self, word: u32, v: i128) -> R<()> {
         self.odd_long(word);
-        let w = word & !1;
-        self.write(w, v >> 16)?;
-        self.write(w + 1, v)
+        self.write(word, v >> 16)?;
+        self.write(word ^ 1, v)
     }
 
     pub fn port_read(&mut self, port: u32) -> R<u32> {
