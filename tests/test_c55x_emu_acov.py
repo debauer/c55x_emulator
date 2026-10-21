@@ -40,7 +40,7 @@ class AcovTests(unittest.TestCase):
         # (guard bits clear) is stored. Count -33 saturates to -32:
         # 0x1234 >> 32 is 0.
         cases = (("T0 = #40", "AC1 = AC0 << T0", 0x01, 0x80000000, [0, 1, 0, 0]),
-                 ("T0 = #-33", "AC1 = AC0 >> T0", 0x1234, 0x3400000000, [0, 1, 0, 0]))
+                 ("T0 = #-33", "AC1 = AC0 >> T0", 0x1234, 0x0, [0, 1, 0, 0]))
         for set_t, insn, value, expected, acov in cases:
             with self.subTest(insn=insn):
                 cpu, _ = machine(set_t, insn)
@@ -57,14 +57,13 @@ if __name__ == "__main__":
 class ShiftM40Tests(unittest.TestCase):
     """M40 selects the shifter working width (SPRU374E 4.70.3)."""
 
-    def test_m40_off_reports_overflow_but_keeps_40_bits(self):
-        # SPRU374E 4.70.3: M40 = 0 substitutes the shifter input, detects
-        # overflow at bit 31 and saturates per SATD; it does NOT truncate
-        # the 40-bit result (an earlier revision of the addressing test
-        # expected truncation, which the manual text does not support).
+    def test_m40_off_extracts_bits_shifted_past_31(self):
+        # SPRU371F / v3.x CPU 2.10.2.9: with M40 = 0 shifts work on 32-bit
+        # values and left shifts extract bits shifted out past bit 31;
+        # overflow is still reported at the boundary.
         cpu, _ = machine("AC0 = #0x10000", "AC0 = AC0 << #16")
         run(cpu)
-        self.assertEqual(cpu.ac[0], 0x100000000)
+        self.assertEqual(cpu.ac[0], 0)
         self.assertEqual(cpu.core.acov(), [1, 0, 0, 0])
 
     def test_m40_off_with_satd_saturates(self):

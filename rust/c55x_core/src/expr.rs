@@ -96,20 +96,29 @@ pub fn satd(m: &Core) -> bool { m.st.st1 & ST1_SATD != 0 }
 /// flag is latched into ACOV at the store), and SATD saturates it to the
 /// width's extreme values.
 pub fn shift_acc(m: &mut Core, value: i128, count: i128) -> R<i128> {
+    // SPRU371F / C55x v3.x CPU 2.10.2.9 (M40) and SPRU374E 4.70.3 (SFTS):
+    // M40 = 0 works on 32-bit values: the input's guard bits are
+    // substituted per SXMD, left shifts extract every bit shifted out past
+    // bit 31, right shifts insert at bit 31, overflow is detected at bit
+    // 31 and SATD saturates to the 32-bit extremes. The exact destination
+    // guard-bit rule for signed left shifts of negative inputs (source bit
+    // 31 vs result bit 31) is ambiguous in both manuals; the rule below
+    // (left: guard clear, right: sign-extended) fits every documented
+    // example and is the one real-hardware validation should confirm.
     let bits = if m40(m) { 40 } else { 32 };
     let mut v = value & ((1i128 << bits) - 1);
     if sx(m) { v = sext(v, bits); }
     let r = shift(v, count)?;
     let (lo, hi) = (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1);
     if r < lo || r > hi {
-        // Overflow at the M40-selected boundary: the destination flag is
-        // reported and SATD saturates. The manual confines M40 = 0 to input
-        // substitution, detection at bit 31 and the saturation values; it
-        // does not truncate the 40-bit shifter result.
         m.shift_ovf = true;
         if satd(m) {
             return Ok(if r > 0 { hi } else { lo });
         }
+    }
+    if bits == 32 {
+        let t = r & ((1i128 << 32) - 1);
+        return Ok(if count >= 0 { t } else { sext(t, 32) });
     }
     Ok(r)
 }

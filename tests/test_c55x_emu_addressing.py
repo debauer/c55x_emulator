@@ -67,16 +67,11 @@ class LongStackTests(unittest.TestCase):
 
 class M40Tests(unittest.TestCase):
     def test_m40_off_keeps_32_bit_semantics(self):
-        # SPRU374E 4.70.3: M40 = 0 substitutes the shifter input, detects
-        # overflow at bit 31 and saturates per SATD, but does not truncate
-        # the 40-bit destination; bit 32 survives in the guard bits and the
-        # overflow is reported (Core.acov()). An earlier revision of this
-        # test expected the bit to be shifted out.
         cpu, _ = machine("AC0 = #1 << #16", "AC0 = AC0 << #16",
                          "TC1 = AC0 == #0")
         run(cpu)
         self.assertEqual((cpu.ac[0], cpu.tc1, tuple(cpu.core.acov())),
-                         (1 << 32, 1, (1, 0, 0, 0)))
+                         (0, 1, (1, 0, 0, 0)))     # bit 32 is shifted out
 
     def test_m40_on_uses_the_guard_bits(self):
         cpu, _ = machine("bit(ST1, #10) = #1", "bit(ST1, #8) = #0", "AC0 = #1 << #16",
